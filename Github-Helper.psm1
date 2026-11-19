@@ -409,6 +409,10 @@ function SemVerObjToSemVerStr {
     Process {
         try {
             $str = "$($semVerObj.Prefix)$($semVerObj.Major).$($semVerObj.Minor).$($semVerObj.Patch)"
+            # WCI: support 4-part BC-style versions (major.minor.patch.revision)
+            if (($semVerObj.PSObject.Properties.Name -contains 'Revision') -and ($semVerObj.Revision -ne -1)) {
+                $str += ".$($semVerObj.Revision)"
+            }
             for ($i=0; $i -lt 5; $i++) {
                 $seg = $semVerObj."Addt$i"
                 if ($seg -eq 'zzz') { break }
@@ -463,7 +467,8 @@ function SemVerStrToSemVerObj {
             # Next part is a version number with 2 or 3 segments
             # 2 segments are allowed only if $allowMajorMinorOnly is specified
             $version = [System.Version]"$($verStr.split('-')[0])"
-            if ($version.Revision -ne -1) { throw "not semver" }
+            # WCI: accept 4-part BC-style versions (major.minor.patch.revision) instead of throwing
+            $revision = [int]$version.Revision
             if ($version.Build -eq -1) {
                 if ($allowMajorMinorOnly) {
                     $version = [System.Version]"$($version.Major).$($version.Minor).0"
@@ -484,6 +489,8 @@ function SemVerStrToSemVerObj {
             $obj | Add-Member -MemberType NoteProperty -Name "Major" -Value ([int]$version.Major)
             $obj | Add-Member -MemberType NoteProperty -Name "Minor" -Value ([int]$version.Minor)
             $obj | Add-Member -MemberType NoteProperty -Name "Patch" -Value ([int]$version.Build)
+            # WCI: -1 means no 4th segment; numeric so 1.5.2.10 sorts above 1.5.2.9 and 1.5.2.x above 1.5.2
+            $obj | Add-Member -MemberType NoteProperty -Name "Revision" -Value ([int]$revision)
             0..4 | ForEach-Object {
                 # default segments to 'zzz' for sorting of SemVer Objects to work as GitHub does
                 $obj | Add-Member -MemberType NoteProperty -Name "Addt$_" -Value 'zzz'
@@ -544,10 +551,14 @@ function CompareSemVerStrs {
             if ($result -eq 0) {
                 $result = $semVerObj1.Patch.CompareTo($semVerObj2.Patch)
                 if ($result -eq 0) {
-                    for ($i=0; $i -lt 5; $i++) {
-                        $result = ("$($semVerObj1."Addt$i")".CompareTo("$($semVerObj2."Addt$i")"))
-                        if ($result -ne 0) {
-                            return $result
+                    # WCI: compare the 4-part revision numerically (-1 = absent, sorts below any revision)
+                    $result = $semVerObj1.Revision.CompareTo($semVerObj2.Revision)
+                    if ($result -eq 0) {
+                        for ($i=0; $i -lt 5; $i++) {
+                            $result = ("$($semVerObj1."Addt$i")".CompareTo("$($semVerObj2."Addt$i")"))
+                            if ($result -ne 0) {
+                                return $result
+                            }
                         }
                     }
                 }
@@ -571,7 +582,7 @@ function GetReleases {
         try {
             $sortedReleases = $releases.tag_name |
                 ForEach-Object { SemVerStrToSemVerObj -semVerStr $_ } |
-                Sort-Object -Property Major,Minor,Patch,Addt0,Addt1,Addt2,Addt3,Addt4 -Descending |
+                Sort-Object -Property Major,Minor,Patch,Revision,Addt0,Addt1,Addt2,Addt3,Addt4 -Descending |
                 ForEach-Object { SemVerObjToSemVerStr -semVerObj $_ } | ForEach-Object {
                     $tag_name = $_
                     $releases | Where-Object { $_.tag_name -eq $tag_name }
